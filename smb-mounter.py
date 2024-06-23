@@ -3,15 +3,11 @@
 import argparse
 import configparser
 import os
-import sys
 import asyncio
 import pyfuse3
-import errno
 import stat
 import smbclient
 import secretstorage
-from smbclient.shutil import copyfile
-from datetime import datetime
 
 
 class SmbFS(pyfuse3.Operations):
@@ -142,6 +138,7 @@ async def main():
         smb_username = share_config["smb_username"]
 
         password = get_password(args.mount)
+
         if not password:
             while True:
                 password = input(f"Enter password for {args.mount}: ")
@@ -150,7 +147,13 @@ async def main():
                 smbclient.listdir(f"\\\\{smb_server}\\{smb_share}")
 
                 # If we get here, the password is correct
-                save_password(args.mount, password)
+                remember_password = "no_save_pass" not in share_config or share_config[
+                    "no_save_pass"
+                ] in ["false", "no"]
+
+                if remember_password:
+                    save_password(args.mount, password)
+
                 break
 
         fs = SmbFS(smb_server, smb_share, smb_username, password)
