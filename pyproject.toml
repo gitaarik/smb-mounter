@@ -7,9 +7,9 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-pysmb = "^1.2.9.1"
-pygobject = "^3.48.2"
-fusepy = "^3.0.1"
+pyfuse3 = "^3.3.0"
+smbprotocol = "^1.13.0"
+secretstorage = "^3.3.3"
 
 
 [build-system]
