@@ -2,6 +2,7 @@ import os
 import stat
 import errno
 import argparse
+import configparser
 from fuse import FUSE, FuseOSError, Operations
 from smb.SMBConnection import SMBConnection
 import getpass
@@ -158,6 +159,18 @@ if __name__ == "__main__":
     parser.add_argument("-u", "--unmount", help="Unmount a daemonized mount")
 
     args = parser.parse_args()
+
+    if args.list:
+
+        config = configparser.ConfigParser()
+        config.read("config.ini")
+
+        for section in config.sections():
+            print(section)
+            print("    mount_path:     ", config[section]["mount_path"])
+            print("    smb_server:     ", config[section]["smb_server"])
+            print("    smb_share:      ", config[section]["smb_share"])
+            print("    username:       ", config[section]["username"])
 
 
 def process_command():
