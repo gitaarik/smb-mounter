@@ -1,6 +1,7 @@
 import os
 import stat
 import errno
+import argparse
 from fuse import FUSE, FuseOSError, Operations
 from smb.SMBConnection import SMBConnection
 import getpass
@@ -135,9 +136,31 @@ def store_password_in_keyring(server, share, username, password):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
-        print("Usage: python script.py <mountpoint> <server> <share> <username>")
-        sys.exit(1)
+
+    parser = argparse.ArgumentParser(
+        prog="smb-mounter",
+        description="Mounts SMB shares to a local directory like a regular file system",
+    )
+
+    parser.add_argument(
+        "-l", "--list", action="store_true", help="List all configured SMB shares"
+    )
+
+    parser.add_argument("-m", "--mount", help="Mount the given share")
+
+    parser.add_argument(
+        "-d",
+        "--daemon",
+        action="store_true",
+        help="Mount the [share] as a background daemon instead of CLI process.",
+    )
+
+    parser.add_argument("-u", "--unmount", help="Unmount a daemonized mount")
+
+    args = parser.parse_args()
+
+
+def process_command():
 
     mountpoint = sys.argv[1]
     server = sys.argv[2]
