@@ -157,6 +157,9 @@ if __name__ == "__main__":
     )
 
     parser.add_argument("-u", "--unmount", help="Unmount a daemonized mount")
+    parser.add_argument(
+        "-f", "--forget", help="Forget the password for a previously mounted share"
+    )
 
     args = parser.parse_args()
 
