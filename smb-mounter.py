@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 
+import os
+import stat
+import asyncio
 import argparse
 import configparser
-import os
-import asyncio
+from getpass import getpass
 import pyfuse3
-import stat
 import smbclient
-import secretstorage
+import smbprotocol
+import secretstorage.exceptions
 
 
 class SmbFS(pyfuse3.Operations):
@@ -103,6 +105,7 @@ def forget_password(share_name):
 
 
 async def main():
+
     parser = argparse.ArgumentParser(
         prog="smb-mounter",
         description="Mounts SMB shares to a local directory like a regular file system",
@@ -127,6 +130,7 @@ async def main():
         return
 
     if args.mount:
+
         if args.mount not in config:
             print(f"Share {args.mount} not found in config.")
             return
@@ -141,10 +145,20 @@ async def main():
 
         if not password:
             while True:
-                password = input(f"Enter password for {args.mount}: ")
+                password = getpass(f"Enter password for {args.mount}: ")
                 # Try to connect and list root directory
                 smbclient.ClientConfig(username=smb_username, password=password)
-                smbclient.listdir(f"\\\\{smb_server}\\{smb_share}")
+
+                try:
+                    smbclient.listdir(f"\\\\{smb_server}\\{smb_share}")
+                except smbprotocol.exceptions.LogonFailure as error:
+                    print("Authentication error:")
+                    print(error)
+                    continue
+                except Exception as error:
+                    print("Unknown error:")
+                    print(error)
+                    continue
 
                 # If we get here, the password is correct
                 remember_password = "no_save_pass" not in share_config or share_config[
@@ -159,14 +173,23 @@ async def main():
         fs = SmbFS(smb_server, smb_share, smb_username, password)
         fuse_options = set(pyfuse3.default_options)
         fuse_options.add("fsname=smbfs")
-        pyfuse3.init(fs, mount_path, fuse_options)
 
-        try:
-            await pyfuse3.main()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            pyfuse3.close()
+        print(fs, mount_path, fuse_options)
+
+        print('hello')
+        await asyncio.sleep(1)
+        print('world')
+
+        pyfuse3.init(fs, mount_path, fuse_options)
+        await pyfuse3.main()
+
+        # try:
+        #     await pyfuse3.main()
+        # except KeyboardInterrupt:
+        #     print("Keyboard interrupt")
+        #     sys.exit()
+        # finally:
+        #     pyfuse3.close()
 
 
 if __name__ == "__main__":
