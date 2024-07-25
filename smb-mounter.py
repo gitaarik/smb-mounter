@@ -2,16 +2,48 @@
 
 import os
 import stat
+import errno
 import asyncio
 import argparse
 import configparser
 from getpass import getpass
-# import pyfuse3
+
 from fuse import FUSE, FuseOSError, Operations
 from smb.SMBConnection import SMBConnection
-import smbclient
-import smbprotocol
-import secretstorage.exceptions
+import secretstorage
+import gi
+
+gi.require_version("Secret", "1")
+from gi.repository import Secret
+
+
+async def main():
+
+    parser = argparse.ArgumentParser(
+        prog="smb-mounter",
+        description="Mounts SMB shares to a local directory like a regular file system",
+    )
+    parser.add_argument(
+        "-l", "--list", action="store_true", help="List all configured SMB shares"
+    )
+    parser.add_argument("-m", "--mount", help="Mount the given share")
+    parser.add_argument(
+        "-f", "--forget", help="Forget the password for a previously mounted share"
+    )
+    args = parser.parse_args()
+
+    config = read_config()
+
+    if args.list:
+        list_shares(config)
+        return
+
+    if args.forget:
+        forget_password(args.forget)
+        return
+
+    if args.mount:
+        mount(args, config)
 
 
 class SMBMount(Operations):
@@ -88,55 +120,6 @@ class SMBMount(Operations):
         file_obj.seek(offset)
         return file_obj.read(size)
 
-# class SmbFS(pyfuse3.Operations):
-#     def __init__(self, smb_server, smb_share, smb_username, smb_password):
-#         super().__init__()
-#         self.smb_url = f"\\\\{smb_server}\\{smb_share}"
-#         self.smb_username = smb_username
-#         self.smb_password = smb_password
-#         smbclient.ClientConfig(username=smb_username, password=smb_password)
-#
-#     async def init(self):
-#         # No need for explicit connection with smbclient
-#         pass
-#
-#     async def lookup(self, parent_inode, name, ctx=None):
-#         path = os.path.join(str(parent_inode), name)
-#         attrs = smbclient.stat(f"{self.smb_url}\\{path}")
-#         return self._getattr(attrs)
-#
-#     async def getattr(self, inode, ctx=None):
-#         if inode == pyfuse3.ROOT_INODE:
-#             return {"st_mode": (stat.S_IFDIR | 0o755), "st_nlink": 2}
-#         path = str(inode)
-#         attrs = smbclient.stat(f"{self.smb_url}\\{path}")
-#         return self._getattr(attrs)
-#
-#     def _getattr(self, attrs):
-#         mode = stat.S_IFREG | 0o644
-#         if stat.S_ISDIR(attrs.st_mode):
-#             mode = stat.S_IFDIR | 0o755
-#         return {
-#             "st_mode": mode,
-#             "st_nlink": 1,
-#             "st_size": attrs.st_size,
-#             "st_ctime": attrs.st_ctime,
-#             "st_mtime": attrs.st_mtime,
-#             "st_atime": attrs.st_atime,
-#         }
-#
-#     async def read(self, inode, off, size):
-#         path = str(inode)
-#         with smbclient.open_file(f"{self.smb_url}\\{path}", mode="rb") as f:
-#             f.seek(off)
-#             return f.read(size)
-#
-#     async def write(self, inode, off, buf):
-#         path = str(inode)
-#         with smbclient.open_file(f"{self.smb_url}\\{path}", mode="r+b") as f:
-#             f.seek(off)
-#             return f.write(buf)
-
 
 def read_config():
     config = configparser.ConfigParser()
@@ -180,6 +163,48 @@ def forget_password(share_name):
     print(f"No saved password found for {share_name}.")
 
 
+def mount(args, config):
+
+    if args.mount not in config:
+        print(f"Share {args.mount} not found in config.")
+        return
+
+    share_config = config[args.mount]
+    mount_path = share_config["mount_path"]
+    smb_server = share_config["smb_server"]
+    smb_share = share_config["smb_share"]
+    smb_username = share_config["smb_username"]
+
+    # Try to get password from GNOME Keyring
+    password = get_password_from_keyring(smb_server, smb_share, smb_username)
+    store_new_pass = False
+    success = False
+
+    while not success:
+
+        if password is None:
+            # If password is not in keyring, prompt for it
+            try:
+                password = getpass("Enter SMB password: ")
+            except KeyboardInterrupt:
+                print()
+                sys.exit()
+
+            store_new_pass = True
+
+        try:
+            mount_smb(mount_path, smb_server, smb_share, smb_username, password)
+            success = True
+        except Exception as e:
+            print(f"Error: {e}")
+            password = None
+
+    if success and store_new_pass:
+        # Store the password in GNOME Keyring
+        print("Password has been stored in GNOME Keyring.")
+        store_password_in_keyring(smb_server, smb_share, smb_username, password)
+
+
 def mount_smb(mountpoint, server, share, username, password):
     FUSE(
         SMBMount(server, share, username, password),
@@ -188,92 +213,44 @@ def mount_smb(mountpoint, server, share, username, password):
         foreground=True,
     )
 
-async def main():
 
-    parser = argparse.ArgumentParser(
-        prog="smb-mounter",
-        description="Mounts SMB shares to a local directory like a regular file system",
+def get_password_from_keyring(server, share, username):
+    # collection = Secret.Collection.for_alias_sync(
+    #     Secret.COLLECTION_DEFAULT, Secret.COLLECTION_DEFAULT, None
+    # )
+    schema = Secret.Schema.new(
+        "org.example.SMBMount",
+        Secret.SchemaFlags.NONE,
+        {
+            "server": Secret.SchemaAttributeType.STRING,
+            "share": Secret.SchemaAttributeType.STRING,
+            "username": Secret.SchemaAttributeType.STRING,
+        },
     )
-    parser.add_argument(
-        "-l", "--list", action="store_true", help="List all configured SMB shares"
+    attributes = {"server": server, "share": share, "username": username}
+    password = Secret.password_lookup_sync(schema, attributes, None)
+    return password
+
+
+def store_password_in_keyring(server, share, username, password):
+    schema = Secret.Schema.new(
+        "org.example.SMBMount",
+        Secret.SchemaFlags.NONE,
+        {
+            "server": Secret.SchemaAttributeType.STRING,
+            "share": Secret.SchemaAttributeType.STRING,
+            "username": Secret.SchemaAttributeType.STRING,
+        },
     )
-    parser.add_argument("-m", "--mount", help="Mount the given share")
-    parser.add_argument(
-        "-f", "--forget", help="Forget the password for a previously mounted share"
+    attributes = {"server": server, "share": share, "username": username}
+    Secret.password_store_sync(
+        schema,
+        attributes,
+        Secret.COLLECTION_DEFAULT,
+        f"SMB Mount Password for {server}/{share}",
+        password,
+        None,
     )
-    args = parser.parse_args()
-
-    config = read_config()
-
-    if args.list:
-        list_shares(config)
-        return
-
-    if args.forget:
-        forget_password(args.forget)
-        return
-
-    if args.mount:
-
-        if args.mount not in config:
-            print(f"Share {args.mount} not found in config.")
-            return
-
-        share_config = config[args.mount]
-        mount_path = share_config["mount_path"]
-        smb_server = share_config["smb_server"]
-        smb_share = share_config["smb_share"]
-        smb_username = share_config["smb_username"]
-
-        password = get_password(args.mount)
-
-        if not password:
-            while True:
-                password = getpass(f"Enter password for {args.mount}: ")
-                # Try to connect and list root directory
-                smbclient.ClientConfig(username=smb_username, password=password)
-
-                try:
-                    smbclient.listdir(f"\\\\{smb_server}\\{smb_share}")
-                except smbprotocol.exceptions.LogonFailure as error:
-                    print("Authentication error:")
-                    print(error)
-                    continue
-                except Exception as error:
-                    print("Unknown error:")
-                    print(error)
-                    continue
-
-                # If we get here, the password is correct
-                remember_password = "no_save_pass" not in share_config or share_config[
-                    "no_save_pass"
-                ] in ["false", "no"]
-
-                if remember_password:
-                    save_password(args.mount, password)
-
-                break
-
-        # fs = SmbFS(smb_server, smb_share, smb_username, password)
-        # fuse_options = set(pyfuse3.default_options)
-        # fuse_options.add("fsname=smbfs")
-        #
-        # print(fs, mount_path, fuse_options)
-        #
-        # print('hello')
-        # await asyncio.sleep(1)
-        # print('world')
-        #
-        # pyfuse3.init(fs, mount_path, fuse_options)
-        # await pyfuse3.main()
-
-        # try:
-        #     await pyfuse3.main()
-        # except KeyboardInterrupt:
-        #     print("Keyboard interrupt")
-        #     sys.exit()
-        # finally:
-        #     pyfuse3.close()
 
 
 if __name__ == "__main__":
